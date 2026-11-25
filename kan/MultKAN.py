@@ -476,7 +476,7 @@ class MultKAN(nn.Module):
                      sp_trainable=self.sp_trainable,
                      sb_trainable=self.sb_trainable,
                      ckpt_path=self.ckpt_path,
-                     auto_save=True,
+                     auto_save=self.auto_save,
                      first_init=False,
                      state_id=self.state_id,
                      round=self.round,
@@ -894,7 +894,7 @@ class MultKAN(nn.Module):
         self.act_fun[l].mask.data[i][j] = mask_n
         self.symbolic_fun[l].mask.data[j,i] = mask_s
 
-    def fix_symbolic(self, l, i, j, fun_name, fit_params_bool=True, a_range=(-10, 10), b_range=(-10, 10), verbose=True, random=False, log_history=True):
+    def fix_symbolic(self, l, i, j, fun_name, fit_params_bool=True, a_range=(-10, 10), b_range=(-10, 10), verbose=True, random=False, log_history=True, grid_number=101, iteration=3):
         '''
         set (l,i,j) activation to be symbolic (specified by fun_name)
         
@@ -951,7 +951,7 @@ class MultKAN(nn.Module):
             mask = self.act_fun[l].mask
             y = self.spline_postacts[l][:, j, i]
             #y = self.postacts[l][:, j, i]
-            r2 = self.symbolic_fun[l].fix_symbolic(i, j, fun_name, x, y, a_range=a_range, b_range=b_range, verbose=verbose)
+            r2 = self.symbolic_fun[l].fix_symbolic(i, j, fun_name, x, y, a_range=a_range, b_range=b_range, verbose=verbose, grid_number=grid_number, iteration=iteration)
             if mask[i,j] == 0:
                 r2 = - 1e8
         self.set_mode(l, i, j, mode="s")
@@ -1409,7 +1409,7 @@ class MultKAN(nn.Module):
         
             
     def fit(self, dataset, opt="LBFGS", steps=100, log=1, lamb=0., lamb_l1=1., lamb_entropy=2., lamb_coef=0., lamb_coefdiff=0., update_grid=True, grid_update_num=10, loss_fn=None, lr=1.,start_grid_update_step=-1, stop_grid_update_step=50, batch=-1,
-              metrics=None, save_fig=False, in_vars=None, out_vars=None, beta=3, save_fig_freq=1, img_folder='./video', singularity_avoiding=False, y_th=1000., reg_metric='edge_forward_spline_n', display_metrics=None):
+              metrics=None, save_fig=False, in_vars=None, out_vars=None, beta=3, save_fig_freq=1, img_folder='./video', singularity_avoiding=False, y_th=1000., reg_metric='edge_forward_spline_n', display_metrics=None, max_eval=None, max_iter=20):
         '''
         training
 
@@ -1496,7 +1496,7 @@ class MultKAN(nn.Module):
         if opt == "Adam":
             optimizer = torch.optim.Adam(self.get_params(), lr=lr)
         elif opt == "LBFGS":
-            optimizer = LBFGS(self.get_params(), lr=lr, history_size=10, line_search_fn="strong_wolfe", tolerance_grad=1e-32, tolerance_change=1e-32, tolerance_ys=1e-32)
+            optimizer = LBFGS(self.get_params(), lr=lr, history_size=10, line_search_fn="strong_wolfe", tolerance_grad=1e-32, tolerance_change=1e-32, tolerance_ys=1e-32, max_eval=max_eval, max_iter=max_iter)
 
         results = {}
         results['train_loss'] = []
@@ -1703,7 +1703,7 @@ class MultKAN(nn.Module):
                 if i not in active_neurons_down[l]:
                     self.remove_node(l + 1, i, mode='down',log_history=False)
 
-        model2 = MultKAN(copy.deepcopy(self.width), grid=self.grid, k=self.k, base_fun=self.base_fun_name, mult_arity=self.mult_arity, ckpt_path=self.ckpt_path, auto_save=True, first_init=False, state_id=self.state_id, round=self.round).to(self.device)
+        model2 = MultKAN(copy.deepcopy(self.width), grid=self.grid, k=self.k, base_fun=self.base_fun_name, mult_arity=self.mult_arity, ckpt_path=self.ckpt_path, auto_save=self.auto_save, first_init=False, state_id=self.state_id, round=self.round).to(self.device)
         model2.load_state_dict(self.state_dict())
         
         width_new = [self.width[0]]
@@ -1864,7 +1864,7 @@ class MultKAN(nn.Module):
         else:
             input_id = torch.tensor(active_inputs, dtype=torch.long).to(self.device)
         
-        model2 = MultKAN(copy.deepcopy(self.width), grid=self.grid, k=self.k, base_fun=self.base_fun, mult_arity=self.mult_arity, ckpt_path=self.ckpt_path, auto_save=True, first_init=False, state_id=self.state_id, round=self.round).to(self.device)
+        model2 = MultKAN(copy.deepcopy(self.width), grid=self.grid, k=self.k, base_fun=self.base_fun, mult_arity=self.mult_arity, ckpt_path=self.ckpt_path, auto_save=self.auto_save, first_init=False, state_id=self.state_id, round=self.round).to(self.device)
         model2.load_state_dict(self.state_dict())
 
         model2.act_fun[0] = model2.act_fun[0].get_subset(input_id, torch.arange(self.width_out[1]))
@@ -2083,7 +2083,7 @@ class MultKAN(nn.Module):
 
         return dic
 
-    def suggest_symbolic(self, l, i, j, a_range=(-10, 10), b_range=(-10, 10), lib=None, topk=5, verbose=True, r2_loss_fun=lambda x: np.log2(1+1e-5-x), c_loss_fun=lambda x: x, weight_simple = 0.8):
+    def suggest_symbolic(self, l, i, j, a_range=(-10, 10), b_range=(-10, 10), lib=None, topk=5, verbose=True, r2_loss_fun=lambda x: np.log2(1+1e-5-x), c_loss_fun=lambda x: x, weight_simple = 0.8, grid_number=101, iteration=3):
         '''
         suggest symbolic function
 
@@ -2138,7 +2138,7 @@ class MultKAN(nn.Module):
 
         # getting r2 and complexities
         for (name, content) in symbolic_lib.items():
-            r2 = self.fix_symbolic(l, i, j, name, a_range=a_range, b_range=b_range, verbose=False, log_history=False)
+            r2 = self.fix_symbolic(l, i, j, name, a_range=a_range, b_range=b_range, verbose=False, log_history=False, grid_number=grid_number, iteration=iteration)
             if r2 == -1e8: # zero function
                 r2s.append(-1e8)
             else:
@@ -2183,7 +2183,7 @@ class MultKAN(nn.Module):
             
         return best_name, best_fun, best_r2, best_c;
 
-    def auto_symbolic(self, a_range=(-10, 10), b_range=(-10, 10), lib=None, verbose=1, weight_simple = 0.8, r2_threshold=0.0):
+    def auto_symbolic(self, a_range=(-10, 10), b_range=(-10, 10), lib=None, verbose=1, weight_simple = 0.8, r2_threshold=0.0, grid_number=101, iteration=3):
         '''
         automatic symbolic regression for all edges
 
@@ -2223,7 +2223,7 @@ class MultKAN(nn.Module):
                         self.fix_symbolic(l, i, j, '0', verbose=verbose > 1, log_history=False)
                         print(f'fixing ({l},{i},{j}) with 0')
                     else:
-                        name, fun, r2, c = self.suggest_symbolic(l, i, j, a_range=a_range, b_range=b_range, lib=lib, verbose=False, weight_simple=weight_simple)
+                        name, fun, r2, c = self.suggest_symbolic(l, i, j, a_range=a_range, b_range=b_range, lib=lib, verbose=False, weight_simple=weight_simple, grid_number=grid_number, iteration=iteration)
                         if r2 >= r2_threshold:
                             self.fix_symbolic(l, i, j, name, verbose=verbose > 1, log_history=False)
                             if verbose >= 1:

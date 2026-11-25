@@ -157,7 +157,7 @@ class Symbolic_KANLayer(nn.Module):
         return sbb
     
     
-    def fix_symbolic(self, i, j, fun_name, x=None, y=None, random=False, a_range=(-10,10), b_range=(-10,10), verbose=True):
+    def fix_symbolic(self, i, j, fun_name, x=None, y=None, random=False, a_range=(-10,10), b_range=(-10,10), verbose=True, grid_number=101, iteration=3):
         '''
         fix an activation function to be symbolic
         
@@ -222,7 +222,7 @@ class Symbolic_KANLayer(nn.Module):
                 return None
             else:
                 #initialize from x & y and fun
-                params, r2 = fit_params(x,y,fun, a_range=a_range, b_range=b_range, verbose=verbose, device=self.device)
+                params, r2 = fit_params(x,y,fun, a_range=a_range, b_range=b_range, verbose=verbose, device=self.device, grid_number=grid_number, iteration=iteration)
                 self.funs[j][i] = fun
                 self.funs_avoid_singularity[j][i] = fun_avoid_singularity
                 self.affine.data[j][i] = params
