@@ -41,7 +41,7 @@ class KANLayer(nn.Module):
             device
     """
 
-    def __init__(self, in_dim=3, out_dim=2, num=5, k=3, noise_scale=0.5, scale_base_mu=0.0, scale_base_sigma=1.0, scale_sp=1.0, base_fun=torch.nn.SiLU(), grid_eps=0.02, grid_range=[-1, 1], sp_trainable=True, sb_trainable=True, save_plot_data = True, device='cpu', sparse_init=False):
+    def __init__(self, in_dim=3, out_dim=2, num=5, k=3, noise_scale=0.5, scale_base_mu=0.0, scale_base_sigma=1.0, scale_sp=1.0, base_fun=torch.nn.SiLU(), grid_eps=0.02, grid_range=[-1, 1], sp_trainable=True, sb_trainable=True, save_plot_data = True, device='cpu', sparse_init=False, ridge_lamb=1e-8, smoothness_lamb=0.0, grid_margin=0.0):
         ''''
         initialize a KANLayer
         
@@ -95,12 +95,16 @@ class KANLayer(nn.Module):
         self.num = num
         self.k = k
 
+        self.ridge_lamb = ridge_lamb
+        self.smoothness_lamb = smoothness_lamb
+        self.grid_margin = grid_margin
+
         grid = torch.linspace(grid_range[0], grid_range[1], steps=num + 1)[None,:].expand(self.in_dim, num+1)
         grid = extend_grid(grid, k_extend=k)
         self.grid = torch.nn.Parameter(grid).requires_grad_(False)
         noises = (torch.rand(self.num+1, self.in_dim, self.out_dim) - 1/2) * noise_scale / num
 
-        self.coef = torch.nn.Parameter(curve2coef(self.grid[:,k:-k].permute(1,0), noises, self.grid, k))
+        self.coef = torch.nn.Parameter(curve2coef(self.grid[:,k:-k].permute(1,0), noises, self.grid, k, ridge_lamb=ridge_lamb, smoothness_lamb=smoothness_lamb))
         
         if sparse_init:
             self.mask = torch.nn.Parameter(sparse_mask(in_dim, out_dim)).requires_grad_(False)
@@ -197,24 +201,24 @@ class KANLayer(nn.Module):
         def get_grid(num_interval):
             ids = [int(batch / num_interval * i) for i in range(num_interval)] + [-1]
             grid_adaptive = x_pos[ids, :].permute(1,0)
-            margin = 0.00
+            margin = self.grid_margin * (grid_adaptive[:,[-1]] - grid_adaptive[:,[0]])
             h = (grid_adaptive[:,[-1]] - grid_adaptive[:,[0]] + 2 * margin)/num_interval
             grid_uniform = grid_adaptive[:,[0]] - margin + h * torch.arange(num_interval+1,)[None, :].to(x.device)
             grid = self.grid_eps * grid_uniform + (1 - self.grid_eps) * grid_adaptive
             return grid
-        
-        
+
+
         grid = get_grid(num_interval)
-        
+
         if mode == 'grid':
             sample_grid = get_grid(2*num_interval)
             x_pos = sample_grid.permute(1,0)
             y_eval = coef2curve(x_pos, self.grid, self.coef, self.k)
-        
+
         self.grid.data = extend_grid(grid, k_extend=self.k)
         #print('x_pos 2', x_pos.shape)
         #print('y_eval 2', y_eval.shape)
-        self.coef.data = curve2coef(x_pos, y_eval, self.grid, self.k)
+        self.coef.data = curve2coef(x_pos, y_eval, self.grid, self.k, ridge_lamb=self.ridge_lamb, smoothness_lamb=self.smoothness_lamb)
 
     def initialize_grid_from_parent(self, parent, x, mode='sample'):
         '''
@@ -269,7 +273,7 @@ class KANLayer(nn.Module):
 
             #print('sp2_grid', sp2.grid[:,sp2.k:-sp2.k].permute(1,0).expand(-1,self.in_dim))
             #print('sp2_coef_shape', sp2.coef.shape)
-            sp2_coef = curve2coef(sp2.grid[:,sp2.k:-sp2.k].permute(1,0).expand(-1,self.in_dim), x_pos.permute(1,0).unsqueeze(dim=2), sp2.grid[:,:], k=1).permute(1,0,2)
+            sp2_coef = curve2coef(sp2.grid[:,sp2.k:-sp2.k].permute(1,0).expand(-1,self.in_dim), x_pos.permute(1,0).unsqueeze(dim=2), sp2.grid[:,:], k=1, ridge_lamb=self.ridge_lamb, smoothness_lamb=self.smoothness_lamb).permute(1,0,2)
             shp = sp2_coef.shape
             #sp2_coef = torch.cat([torch.zeros(shp[0], shp[1], 1), sp2_coef, torch.zeros(shp[0], shp[1], 1)], dim=2)
             #print('sp2_coef',sp2_coef)
@@ -289,7 +293,7 @@ class KANLayer(nn.Module):
         
         grid = extend_grid(grid, k_extend=self.k)
         self.grid.data = grid
-        self.coef.data = curve2coef(x_pos, y_eval, self.grid, self.k)
+        self.coef.data = curve2coef(x_pos, y_eval, self.grid, self.k, ridge_lamb=self.ridge_lamb, smoothness_lamb=self.smoothness_lamb)
 
     def get_subset(self, in_id, out_id):
         '''

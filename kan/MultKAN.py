@@ -93,7 +93,7 @@ class MultKAN(nn.Module):
             the number of times rewind() has been called
         device : str
     '''
-    def __init__(self, width=None, grid=3, k=3, mult_arity = 2, noise_scale=0.3, scale_base_mu=0.0, scale_base_sigma=1.0, base_fun='silu', symbolic_enabled=True, affine_trainable=False, grid_eps=0.02, grid_range=[-1, 1], sp_trainable=True, sb_trainable=True, seed=1, save_act=True, sparse_init=False, auto_save=True, first_init=True, ckpt_path='./model', state_id=0, round=0, device='cpu'):
+    def __init__(self, width=None, grid=3, k=3, mult_arity = 2, noise_scale=0.3, scale_base_mu=0.0, scale_base_sigma=1.0, base_fun='silu', symbolic_enabled=True, affine_trainable=False, grid_eps=0.02, grid_range=[-1, 1], sp_trainable=True, sb_trainable=True, seed=1, save_act=True, sparse_init=False, auto_save=True, first_init=True, ckpt_path='./model', state_id=0, round=0, device='cpu', ridge_lamb=1e-8, smoothness_lamb=0.0, grid_margin=0.0):
         '''
         initalize a KAN model
         
@@ -196,8 +196,12 @@ class MultKAN(nn.Module):
             
         self.grid_eps = grid_eps
         self.grid_range = grid_range
-            
-        
+
+        self.ridge_lamb = ridge_lamb
+        self.smoothness_lamb = smoothness_lamb
+        self.grid_margin = grid_margin
+
+
         for l in range(self.depth):
             # splines
             if isinstance(grid, list):
@@ -211,7 +215,7 @@ class MultKAN(nn.Module):
                 k_l = k
                     
             
-            sp_batch = KANLayer(in_dim=width_in[l], out_dim=width_out[l+1], num=grid_l, k=k_l, noise_scale=noise_scale, scale_base_mu=scale_base_mu, scale_base_sigma=scale_base_sigma, scale_sp=1., base_fun=base_fun, grid_eps=grid_eps, grid_range=grid_range, sp_trainable=sp_trainable, sb_trainable=sb_trainable, sparse_init=sparse_init)
+            sp_batch = KANLayer(in_dim=width_in[l], out_dim=width_out[l+1], num=grid_l, k=k_l, noise_scale=noise_scale, scale_base_mu=scale_base_mu, scale_base_sigma=scale_base_sigma, scale_sp=1., base_fun=base_fun, grid_eps=grid_eps, grid_range=grid_range, sp_trainable=sp_trainable, sb_trainable=sb_trainable, sparse_init=sparse_init, ridge_lamb=ridge_lamb, smoothness_lamb=smoothness_lamb, grid_margin=grid_margin)
             self.act_fun.append(sp_batch)
 
         self.node_bias = []
@@ -400,7 +404,7 @@ class MultKAN(nn.Module):
             # spb = spb_parent
             preacts = another_model.spline_preacts[l]
             postsplines = another_model.spline_postsplines[l]
-            self.act_fun[l].coef.data = curve2coef(preacts[:,0,:], postsplines.permute(0,2,1), spb.grid, k=spb.k)
+            self.act_fun[l].coef.data = curve2coef(preacts[:,0,:], postsplines.permute(0,2,1), spb.grid, k=spb.k, ridge_lamb=spb.ridge_lamb, smoothness_lamb=spb.smoothness_lamb)
             self.act_fun[l].scale_base.data = another_model.act_fun[l].scale_base.data
             self.act_fun[l].scale_sp.data = another_model.act_fun[l].scale_sp.data
             self.act_fun[l].mask.data = another_model.act_fun[l].mask.data
@@ -473,6 +477,9 @@ class MultKAN(nn.Module):
                      affine_trainable=self.affine_trainable, 
                      grid_eps=self.grid_eps, 
                      grid_range=self.grid_range, 
+                     ridge_lamb=self.ridge_lamb,
+                     smoothness_lamb=self.smoothness_lamb,
+                     grid_margin=self.grid_margin,
                      sp_trainable=self.sp_trainable,
                      sb_trainable=self.sb_trainable,
                      ckpt_path=self.ckpt_path,
@@ -526,6 +533,9 @@ class MultKAN(nn.Module):
             affine_trainable = model.affine_trainable,
             grid_eps = model.grid_eps,
             grid_range = model.grid_range,
+            ridge_lamb = model.ridge_lamb,
+            smoothness_lamb = model.smoothness_lamb,
+            grid_margin = model.grid_margin,
             sp_trainable = model.sp_trainable,
             sb_trainable = model.sb_trainable,
             state_id = model.state_id,
@@ -582,6 +592,9 @@ class MultKAN(nn.Module):
                      affine_trainable=config['affine_trainable'], 
                      grid_eps=config['grid_eps'], 
                      grid_range=config['grid_range'], 
+                     ridge_lamb=config.get('ridge_lamb', 1e-8),
+                     smoothness_lamb=config.get('smoothness_lamb', 0.0),
+                     grid_margin=config.get('grid_margin', 0.0),
                      sp_trainable=config['sp_trainable'],
                      sb_trainable=config['sb_trainable'],
                      state_id=config['state_id'],
@@ -1703,7 +1716,7 @@ class MultKAN(nn.Module):
                 if i not in active_neurons_down[l]:
                     self.remove_node(l + 1, i, mode='down',log_history=False)
 
-        model2 = MultKAN(copy.deepcopy(self.width), grid=self.grid, k=self.k, base_fun=self.base_fun_name, mult_arity=self.mult_arity, ckpt_path=self.ckpt_path, auto_save=self.auto_save, first_init=False, state_id=self.state_id, round=self.round).to(self.device)
+        model2 = MultKAN(copy.deepcopy(self.width), grid=self.grid, k=self.k, base_fun=self.base_fun_name, mult_arity=self.mult_arity, ckpt_path=self.ckpt_path, auto_save=self.auto_save, first_init=False, state_id=self.state_id, round=self.round, ridge_lamb=self.ridge_lamb, smoothness_lamb=self.smoothness_lamb, grid_margin=self.grid_margin).to(self.device)
         model2.load_state_dict(self.state_dict())
         
         width_new = [self.width[0]]
@@ -1864,7 +1877,7 @@ class MultKAN(nn.Module):
         else:
             input_id = torch.tensor(active_inputs, dtype=torch.long).to(self.device)
         
-        model2 = MultKAN(copy.deepcopy(self.width), grid=self.grid, k=self.k, base_fun=self.base_fun, mult_arity=self.mult_arity, ckpt_path=self.ckpt_path, auto_save=self.auto_save, first_init=False, state_id=self.state_id, round=self.round).to(self.device)
+        model2 = MultKAN(copy.deepcopy(self.width), grid=self.grid, k=self.k, base_fun=self.base_fun, mult_arity=self.mult_arity, ckpt_path=self.ckpt_path, auto_save=self.auto_save, first_init=False, state_id=self.state_id, round=self.round, ridge_lamb=self.ridge_lamb, smoothness_lamb=self.smoothness_lamb, grid_margin=self.grid_margin).to(self.device)
         model2.load_state_dict(self.state_dict())
 
         model2.act_fun[0] = model2.act_fun[0].get_subset(input_id, torch.arange(self.width_out[1]))
@@ -2375,7 +2388,7 @@ class MultKAN(nn.Module):
 
         # add kanlayer, set mask to zero
         dim_out = self.width_in[-1]
-        layer = KANLayer(dim_out, dim_out, num=self.grid, k=self.k)
+        layer = KANLayer(dim_out, dim_out, num=self.grid, k=self.k, ridge_lamb=self.ridge_lamb, smoothness_lamb=self.smoothness_lamb, grid_margin=self.grid_margin)
         layer.mask *= 0.
         self.act_fun.append(layer)
 
@@ -2446,7 +2459,7 @@ class MultKAN(nn.Module):
                                 new.affine.data[j][i] = old.affine.data[j-n_added_nodes][i]
 
                     self.symbolic_fun[l] = new
-                    self.act_fun[l] = KANLayer(in_dim, out_dim + n_added_nodes, num=self.grid, k=self.k)
+                    self.act_fun[l] = KANLayer(in_dim, out_dim + n_added_nodes, num=self.grid, k=self.k, ridge_lamb=self.ridge_lamb, smoothness_lamb=self.smoothness_lamb, grid_margin=self.grid_margin)
                     self.act_fun[l].mask *= 0.
 
                     self.node_scale[l].data = torch.cat([torch.ones(n_added_nodes, device=self.device), self.node_scale[l].data])
@@ -2477,7 +2490,7 @@ class MultKAN(nn.Module):
                                 new.affine.data[j][i] = old.affine.data[j][i-n_added_nodes]
 
                     self.symbolic_fun[l] = new
-                    self.act_fun[l] = KANLayer(in_dim + n_added_nodes, out_dim, num=self.grid, k=self.k)
+                    self.act_fun[l] = KANLayer(in_dim + n_added_nodes, out_dim, num=self.grid, k=self.k, ridge_lamb=self.ridge_lamb, smoothness_lamb=self.smoothness_lamb, grid_margin=self.grid_margin)
                     self.act_fun[l].mask *= 0.
 
 
@@ -2508,7 +2521,7 @@ class MultKAN(nn.Module):
                                 new.affine.data[j][i] = old.affine.data[j][i]
 
                     self.symbolic_fun[l] = new
-                    self.act_fun[l] = KANLayer(in_dim, out_dim + n_added_subnodes, num=self.grid, k=self.k)
+                    self.act_fun[l] = KANLayer(in_dim, out_dim + n_added_subnodes, num=self.grid, k=self.k, ridge_lamb=self.ridge_lamb, smoothness_lamb=self.smoothness_lamb, grid_margin=self.grid_margin)
                     self.act_fun[l].mask *= 0.
 
                     self.node_scale[l].data = torch.cat([self.node_scale[l].data, torch.ones(n_added_nodes, device=self.device)])
@@ -2537,7 +2550,7 @@ class MultKAN(nn.Module):
                                 new.affine.data[j][i] = old.affine.data[j][i]
 
                     self.symbolic_fun[l] = new
-                    self.act_fun[l] = KANLayer(in_dim + n_added_nodes, out_dim, num=self.grid, k=self.k)
+                    self.act_fun[l] = KANLayer(in_dim + n_added_nodes, out_dim, num=self.grid, k=self.k, ridge_lamb=self.ridge_lamb, smoothness_lamb=self.smoothness_lamb, grid_margin=self.grid_margin)
                     self.act_fun[l].mask *= 0.
 
         _expand(layer_id-1, n_added_nodes, sum_bool, mult_arity, added_dim='out')

@@ -78,7 +78,7 @@ def coef2curve(x_eval, grid, coef, k, device="cpu"):
     return y_eval
 
 
-def curve2coef(x_eval, y_eval, grid, k):
+def curve2coef(x_eval, y_eval, grid, k, ridge_lamb=1e-8, smoothness_lamb=0.0):
     '''
     converting B-spline curves to B-spline coefficients using least squares.
     
@@ -92,42 +92,44 @@ def curve2coef(x_eval, y_eval, grid, k):
             shape (in_dim, grid+2*k)
         k : int
             spline order
-        lamb : float
-            regularized least square lambda
-            
+        ridge_lamb : float
+            ridge shift added to the normal-equation matrix; keeps the solution finite
+            when the design matrix is rank-deficient
+        smoothness_lamb : float
+            weight of the second-difference penalty on neighbouring coefficients
+            (Eq. 2 of "Splines, Knots, and Penalties", Eiler & Marx 2010).
+            0 disables the penalty.
+
     Returns:
     --------
         coef : 3D torch.tensor
             shape (in_dim, out_dim, G+k)
     '''
-    #print('haha', x_eval.shape, y_eval.shape, grid.shape)
     batch = x_eval.shape[0]
     in_dim = x_eval.shape[1]
     out_dim = y_eval.shape[2]
     n_coef = grid.shape[1] - k - 1
     mat = B_batch(x_eval, grid, k)
     mat = mat.permute(1,0,2)[:,None,:,:].expand(in_dim, out_dim, batch, n_coef)
-    #print('mat', mat.shape)
     y_eval = y_eval.permute(1,2,0).unsqueeze(dim=3)
-    #print('y_eval', y_eval.shape)
     device = mat.device
-    
-    #coef = torch.linalg.lstsq(mat, y_eval, driver='gelsy' if device == 'cpu' else 'gels').solution[:,:,:,0]
-    try:
-        coef = torch.linalg.lstsq(mat, y_eval).solution[:,:,:,0]
-    except:
-        print('lstsq failed')
-    
-    # manual psuedo-inverse
-    '''lamb=1e-8
+
+    # Решаем нормальные уравнения, а не torch.linalg.lstsq: на CUDA он поддерживает
+    # только driver='gels' и молча возвращает NaN, когда матрица Б-сплайнов
+    # ранг-дефицитна (у признака меньше уникальных значений, чем коэффициентов).
     XtX = torch.einsum('ijmn,ijnp->ijmp', mat.permute(0,1,3,2), mat)
     Xty = torch.einsum('ijmn,ijnp->ijmp', mat.permute(0,1,3,2), y_eval)
-    n1, n2, n = XtX.shape[0], XtX.shape[1], XtX.shape[2]
-    identity = torch.eye(n,n)[None, None, :, :].expand(n1, n2, n, n).to(device)
-    A = XtX + lamb * identity
-    B = Xty
-    coef = (A.pinverse() @ B)[:,:,:,0]'''
-    
+    A = XtX + ridge_lamb * torch.eye(n_coef, device=device)[None,None,:,:]
+
+    if smoothness_lamb > 0:
+        D = torch.zeros(n_coef-1, n_coef, device=device)
+        idx = torch.arange(n_coef-1, device=device)
+        D[idx, idx] = -1
+        D[idx, idx+1] = 1
+        A = A + smoothness_lamb * (D.T @ D)
+
+    coef = (torch.linalg.pinv(A) @ Xty)[:,:,:,0]
+
     return coef
 
 
